@@ -1,0 +1,181 @@
+#!/usr/bin/env python
+
+from collections import OrderedDict, namedtuple
+
+Benchmark = namedtuple('Benchmark', ('name', 'iterations', 'ns_op', 'b_op', 'allocs_op'))
+BenchmarkComparison = namedtuple('BenchmarkComparison', ('name', 'ns_op1', 'ns_op2', 'ns_ratio', 'b_op1', 'b_op2', 'b_ratio', 'allocs_op1', 'allocs_op2', 'allocs_ratio'))
+
+def bench_text(bench):
+  ops_sec = 1e9/bench.ns_op
+  if ops_sec > 100:
+    ops_sec = int(ops_sec)
+  if bench.allocs_op is not None:
+    return [bench.name, bench.iterations, str(int(bench.ns_op)), 'ns/op', str(ops_sec), 'ops/sec', str(int(bench.b_op)), 'B/op', str(int(bench.allocs_op)), 'allocs/op']
+  return [bench.name, bench.iterations, str(int(bench.ns_op)), 'ns/op', str(ops_sec), 'ops/sec']
+
+def comp_text(comp):
+      ops_sec1 = 1e9/comp.ns_op1
+      if ops_sec1 > 1000:
+        ops_sec1 = int(ops_sec1)
+      ops_sec2 = 1e9/comp.ns_op2
+      if ops_sec2 > 1000:
+        ops_sec2 = int(ops_sec2)
+      if comp.allocs_ratio is None:
+        return([comp.name, str(int(comp.ns_op1)), 'ns/op', '->', str(int(comp.ns_op2)), 'ns/op', str(ops_sec1), 'ops/sec', '->', str(ops_sec2), 'ops/sec', str(comp.ns_ratio), ratio_to_percent(comp.ns_ratio)])
+      return([comp.name, str(int(comp.ns_op1)), 'ns/op', '->', str(int(comp.ns_op2)), 'ns/op', str(ops_sec1), 'ops/sec', '->', str(ops_sec2), 'ops/sec', str(comp.ns_ratio), ratio_to_percent(comp.ns_ratio),
+              str(int(comp.b_op1)), 'b/op', '->', str(int(comp.b_op2)), 'b/op', str(ops_sec1), 'ops/sec', '->', str(ops_sec2), 'ops/sec', str(comp.b_ratio), ratio_to_percent(comp.b_ratio),
+              str(int(comp.allocs_op1)), 'allocs/op', '->', str(int(comp.allocs_op2)), 'allocs/op', str(ops_sec1), 'ops/sec', '->', str(ops_sec2), 'ops/sec', str(comp.allocs_ratio), ratio_to_percent(comp.allocs_ratio)])
+
+def pretty_print_columns(lines, path, min_column_spacing=4, pointer_spacing=2, extra_lines=[]):
+  max_lengths = [len(c) for c in lines[0]]
+  for l in lines:
+    for i, c in enumerate(l):
+      max_lengths[i] = max(max_lengths[i], len(c))
+  output = []
+  for l in lines:
+    ol = []
+    for i, c in enumerate(l):
+      if c and starts_with_digit(c):
+        ol.append(' ' * (max_lengths[i] - len(c)))
+        ol.append(c)
+        if len(l) > i + 1:
+          if c == '->':
+            ol.append(' ' * pointer_spacing)
+          elif starts_with_digit(l[i+1]):
+            ol.append(' ' * min_column_spacing)
+          else:
+            ol.append(' ')
+      else:
+        ol.append(c)
+        ol.append(' ' * (max_lengths[i] - len(c)))
+        if len(l) > i + 1:
+          if l[i+1] == '->':
+            ol.append(' ' * pointer_spacing)
+          else:
+            ol.append(' ' * min_column_spacing)
+    output.append(''.join(ol))
+  with open(path, 'w') as f:
+    for l in output:
+      f.write(l)
+      f.write('\n')
+    for l in extra_lines:
+      f.write(l)
+      f.write('\n')
+
+def ratio_to_percent(ratio):
+  if not ratio:
+    return '0%'
+  if ratio > 1:
+    return '+%f%%' % (ratio/100.0)
+  elif ratio < 1:
+    return '-%f%%' % (ratio/100.0)
+  return '0%'
+
+def starts_with_digit(s):
+  if not s:
+    return False
+  c = s[0]
+  if c.isdigit() or c == '+' or c == '-':
+    return True
+  return False
+
+class BenchmarkComparisonSet(object):
+  def __init__(self, comparisons):
+    self.comparisons = comparisons
+
+  def write(self, path):
+    lines = []
+    ns_best = 1
+    ns_worst = 1
+    ns_total = 0
+    b_best = 1
+    b_worst = 1e100
+    b_total = 0
+    allocs_best = 1
+    allocs_worst = 1e100
+    allocs_total = 0
+    for name, comp in self.comparisons.iteritems():
+      ns_best = max(comp.ns_ratio, ns_best)
+      ns_worst = min(comp.ns_ratio, ns_worst)
+      ns_total += comp.ns_ratio
+      if comp.allocs_ratio is not None:
+        b_best = max(comp.b_ratio, b_best)
+        b_worst = min(comp.b_ratio, b_worst)
+        b_total += comp.b_ratio
+        allocs_best = max(comp.allocs_ratio, allocs_best)
+        allocs_worst = min(comp.allocs_ratio, allocs_worst)
+        allocs_total += comp.allocs_ratio
+      lines.append(comp_text(comp))
+    extra_lines = ['', 'ns/op        Best: %f (%s) Worst: %f (%s) Mean: %f (%s)' % (ns_best, ratio_to_percent(ns_best), ns_worst, ratio_to_percent(ns_worst), ns_total/len(self.comparisons), ratio_to_percent(ns_total/len(self.comparisons)))]
+    if b_worst != 1e100:
+      extra_lines += ['b/op         Best: %f (%s) Worst: %f (%s) Mean: %f (%s)' % (b_best, ratio_to_percent(b_best), b_worst, ratio_to_percent(b_worst), b_total/len(self.comparisons), ratio_to_percent(b_total/len(self.comparisons)))]
+      extra_lines += ['allocs/op    Best: %f (%s) Worst: %f (%s) Mean: %f (%s)' % (allocs_best, ratio_to_percent(allocs_best), allocs_worst, ratio_to_percent(allocs_worst), allocs_total/len(self.comparisons), ratio_to_percent(allocs_total/len(self.comparisons)))]
+    pretty_print_columns(lines, path, extra_lines=extra_lines)
+
+class BenchmarkSet(object):
+
+  def __init__(self, path):
+    benchmarks = OrderedDict()
+    with open(path, 'r') as f:
+      for l in f.readlines():
+        s = l.strip().split()
+        if s[0].startswith('Benchmark'):
+          if s[-1] == 'ns/op':
+            benchmark = Benchmark(s[0], s[1], float(s[2]), None, None)
+            benchmarks[benchmark.name] = benchmarks.get(benchmark.name, []) + [benchmark]
+          if s[-1] == 'allocs/op':
+            benchmark = Benchmark(s[0], s[1], float(s[2]), float(s[4]), float(s[6]))
+            benchmarks[benchmark.name] = benchmarks.get(benchmark.name, []) + [benchmark]
+
+    self.benchmarks = OrderedDict()
+    for name, b in benchmarks.iteritems():
+      self.benchmarks[name] = Benchmark(b[0].name, b[0].iterations, sum(i.ns_op for i in b)/len(b), None if b[0].b_op is None else sum(i.b_op for i in b)/len(b), None if b[0].allocs_op is None else sum(i.allocs_op for i in b)/len(b))
+
+  def compare(self, other):
+    comparisons = OrderedDict()
+    for name, bench in self.benchmarks.iteritems():
+      if name in other.benchmarks:
+        bench2 = other.benchmarks[name]
+        if bench.allocs_op is None or bench2.allocs_op is None:
+          comparisons[name] = BenchmarkComparison(bench.name, bench.ns_op, bench2.ns_op, bench.ns_op/bench2.ns_op, None, None, None, None, None, None)
+        else:
+          comparisons[name] = BenchmarkComparison(bench.name, bench.ns_op, bench2.ns_op, bench.ns_op/bench2.ns_op, bench.b_op, bench2.b_op, bench2.b_op and bench.b_op/bench2.b_op or 0, bench.allocs_op, bench2.allocs_op, bench2.allocs_op and bench.allocs_op/bench2.allocs_op or 0)
+    return BenchmarkComparisonSet(comparisons)
+
+  def write(self, path):
+    lines = []
+    for name, bench in self.benchmarks.iteritems():
+      lines.append(bench_text(bench))
+    pretty_print_columns(lines, path)
+
+  def merge(self, others):
+    means = OrderedDict()
+    for name, bench in self.benchmarks.iteritems():
+      means[name] = bench.ns_op
+    for o in others:
+      for name, bench in self.benchmarks.iteritems():
+        means[name] += bench.ns_op
+    for name, s in means.iteritems():
+      self.benchmarks[name] = Benchmark(name, '', s/(len(others)+1.0),'')
+
+if __name__ == '__main__':
+  from argparse import ArgumentParser
+  parser = ArgumentParser()
+  parser.add_argument('-i', '--input', type=str, help='A Go benchmark output file to process')
+  parser.add_argument('-o', '--output', type=str, help='Where to save the file, if empty, "--input" will be used or "--input"-"--compare".compare for comparisons.')
+  parser.add_argument('-c', '--compare', type=str, help='An Go benchmark file to compare to. Only benchmarks contained in both files will be included in the output.')
+  parser.add_argument('-m', '--merge', type=str, nargs='*', help='Additional benchmarks to average into a single benchmark')
+  parser.add_argument('--compare-merge', dest='compare_merge', type=str, nargs='*', help='Additional benchmarks to average into a single benchmark for comparison')
+  args = parser.parse_args()
+  bench = BenchmarkSet(args.input)
+  if args.merge:
+    bench.merge([BenchmarkSet(p) for p in args.merge])
+  if args.compare:
+    output_path = args.output or '%s-%s.compare' % (args.input, args.compare)
+    compare = BenchmarkSet(args.compare)
+    if args.compare_merge:
+      bench.merge([BenchmarkSet(p) for p in args.compare_merge])
+    bench.compare(compare).write(output_path)
+  else:
+    output_path = args.output or args.input
+    bench.write(output_path)
